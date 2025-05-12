@@ -1,0 +1,4 @@
+requests
+homeassistant
+pydantic
+aiohttp

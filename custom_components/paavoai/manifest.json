@@ -1,0 +1,16 @@
+{
+  "domain": "ha_paavo",
+  "name": "Paavo AI",
+  "version": "1.0.0",
+  "documentation": "https://github.com/kulve/ha-paavo",
+  "requirements": [
+    "requests",
+    "homeassistant"
+  ],
+  "dependencies": [],
+  "codeowners": [
+    "@kulve"
+  ],
+  "iot_class": "local_polling",
+  "integration_type": "component"
+}
