@@ -1,23 +1,34 @@
+from homeassistant.components.conversation import (
+    AbstractConversationAgent,
+    ConversationInput,
+    ConversationResult,
+)
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import config_entry_flow
 from .ollama_client import OllamaClient
 
-class ConversationAgent:
-    def __init__(self, hass: HomeAssistant):
+class PaavoAIConversationAgent(AbstractConversationAgent):
+    def __init__(self, hass: HomeAssistant, config):
         self.hass = hass
-        self.ollama_client = OllamaClient()
+        self.config = config
+        self.client = OllamaClient(
+            config["host"], config["port"], config["model"]
+        )
 
-    async def handle_user_input(self, user_input: str) -> str:
-        response = await self.ollama_client.send_request(user_input)
-        return response
+    @property
+    def supported_languages(self):
+        return ["en", "fi"]
 
-    async def start_conversation(self, user_input: str) -> str:
-        # Initialize conversation state if needed
-        return await self.handle_user_input(user_input)
+    @property
+    def attribution(self):
+        return "Powered by Ollama"
 
-    async def end_conversation(self) -> None:
-        # Handle any cleanup or state reset if necessary
-        pass
-
-    # Additional methods for managing conversation state can be added here
+    async def async_process(self, user_input: ConversationInput) -> ConversationResult:
+        # Call OllamaClient synchronously for simplicity; you may want to use async
+        response = await self.hass.async_add_executor_job(
+            self.client.get_response, user_input.text
+        )
+        return ConversationResult(
+            response=response,
+            conversation_id=user_input.conversation_id,
+        )
 

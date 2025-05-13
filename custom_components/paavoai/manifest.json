@@ -1,16 +1,15 @@
 {
-  "domain": "ha_paavo",
+  "domain": "paavoai",
   "name": "Paavo AI",
   "version": "1.0.0",
   "documentation": "https://github.com/kulve/ha-paavo",
-  "requirements": [
-    "requests",
-    "homeassistant"
-  ],
-  "dependencies": [],
+  "requirements": ["requests"],
+  "dependencies": ["conversation"],
   "codeowners": [
     "@kulve"
   ],
   "iot_class": "local_polling",
-  "integration_type": "component"
+  "integration_type": "component",
+  "icon": "mdi:robot",
+  "config_flow": true
 }
