@@ -1,4 +1,5 @@
 import logging
+import requests
 _LOGGER = logging.getLogger(__name__)
 
 class OllamaClient:
@@ -7,31 +8,35 @@ class OllamaClient:
         self.model = model
 
     def send_request(self, prompt):
-        import requests
-        import json # Import json for logging the payload if needed
 
-        # Standard Ollama API endpoint is /api/generate
+        # TODO: Use Ollama's API to disable thinking mode
+        prompt = prompt.strip() + "\n/nothink"
+
         api_url = f"{self.base_url}/api/generate"
-        payload = {"prompt": prompt, "model": self.model, "stream": False} # Added stream: False
+        payload = {"prompt": prompt, "model": self.model, "stream": False}
 
-        # It's good practice to log what you're sending, especially during debugging
         _LOGGER.debug(f"Sending request to Ollama: URL={api_url}, Payload={json.dumps(payload)}")
 
         response = requests.post(api_url, json=payload)
 
-        _LOGGER.debug(f"Ollama response status: {response.status_code}, Text: {response.text[:500]}") # Log response
+        _LOGGER.debug(f"Ollama response status: {response.status_code}, response: {response}")
 
         if response.status_code == 200:
             try:
-                # For non-streaming, the response is a JSON object
                 response_data = response.json()
                 return response_data.get("response")
             except requests.exceptions.JSONDecodeError:
                 # Handle cases where response is 200 but not valid JSON
-                raise Exception(f"Error: Ollama returned 200 but response was not valid JSON. Response: {response.text}")
+                # TODO: Use language specific error messages that can be spoken
+                error_message = f"Ollama response was not valid JSON. Response: {response.text}"
+                _LOGGER.error(error_message)
+                return error_message
+
         else:
-            _LOGGER.error(f"Ollama error: {response.status_code} - {response.text}")
-            raise Exception(f"Error: {response.status_code} - {response.text}")
+            # TODO: Use language specific error messages that can be spoken
+            error_message = f"Ollama Error: {response.status_code} - {response.text}"
+            _LOGGER.error(error_message)
+            return error_message
 
     def get_response(self, user_input):
         return self.send_request(user_input)
