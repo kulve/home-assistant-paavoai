@@ -2,8 +2,8 @@ from homeassistant.components.conversation import (
     AbstractConversationAgent,
     ConversationInput,
     ConversationResult,
-    SpeechResponse,
 )
+from homeassistant.helpers.intent import IntentResponse
 from homeassistant.core import HomeAssistant
 import logging
 
@@ -45,13 +45,11 @@ class PaavoAIConversationAgent(AbstractConversationAgent):
             response_text = f"An error occurred: {e}"
 
 
-        # Create a SpeechResponse object
-        speech_response = SpeechResponse(
-            speech={"plain": {"speech": response_text}},
-            language=user_input.language,
-        )
+        # Create an IntentResponse object
+        intent_response = IntentResponse(language=user_input.language)
+        intent_response.async_set_speech("plain", response_text)
 
         return ConversationResult(
-            response=speech_response,
+            response=intent_response,
             conversation_id=user_input.conversation_id,
         )
