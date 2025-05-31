@@ -2,3 +2,4 @@ requests
 homeassistant
 pydantic
 aiohttp
+tomllib

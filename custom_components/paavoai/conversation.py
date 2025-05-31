@@ -1,24 +1,19 @@
-try:
-    from homeassistant.components.conversation import (
-        AbstractConversationAgent,
-        ConversationInput,
-        ConversationResult,
-    )
-    from homeassistant.helpers.intent import IntentResponse
-    from homeassistant.core import HomeAssistant
-except ImportError:
-    from ha_mocks import (
-        AbstractConversationAgent,
-        ConversationInput,
-        ConversationResult,
-        IntentResponse,
-        HomeAssistant,
-    )
+""" Conversation agent for PaavoAI using Ollama."""
+
 
 import logging
 import sys
 from datetime import datetime
 from collections import deque
+
+from homeassistant.components.conversation import (
+    AbstractConversationAgent,
+    ConversationInput,
+    ConversationResult,
+)
+from homeassistant.helpers.intent import IntentResponse
+from homeassistant.core import HomeAssistant
+
 from .music_player import MusicPlayer
 
 logging.basicConfig(
@@ -27,25 +22,46 @@ logging.basicConfig(
     stream=sys.stdout
 )
 
+_DOMAIN = "paavoai"
 _LOGGER = logging.getLogger(__name__)
-
 _MAX_HISTORY_LENGTH = 10  # Static max history length
 
 
-class PaavoAIConversationAgentError(Exception):
+class PaavoAIError(Exception):
     """Custom exception for PaavoAI conversation agent errors."""
+    def __init__(self, message: str, ollama_broken: bool = False):
+        super().__init__(message)
+        self.ollama_broken= ollama_broken
 
 
 class PaavoAIConversationAgent(AbstractConversationAgent):
-    def __init__(self, hass: HomeAssistant, config_data: dict, client):
-        self.hass = hass
-        self.config_data = config_data
-        self.ollama = client
+    """ PaavoAI conversation agent using Ollama for processing user input."""
+
+    def __init__(self, hass: HomeAssistant, hass_data: dict, ollama_client, paavoai_config: dict):
+        """ Initialize the PaavoAI conversation agent."""
+        self._hass = hass
+        self._hass_data = hass_data
+        self._ollama = ollama_client
+        self._cfg = paavoai_config
+
         # Single history for the discussion
         self._history = deque(maxlen=_MAX_HISTORY_LENGTH)
-        media_player_entity_id = self.config_data.get("media_player_entity_id", "media_player.shieldi") # Provide a sensible default or make it required
-        default_playlist = self.config_data.get("default_playlist_id")
-        self.music_player = MusicPlayer(self.hass, media_player_entity_id, default_playlist)
+        # TODO: Don't hardcode the media player entity ID
+        media_player_entity_id = self._hass_data.get("media_player_entity_id",
+                                                      "media_player.shieldi")
+        default_playlist = self._hass_data.get("default_playlist_id", "")
+        self.music_player = MusicPlayer(self._hass, media_player_entity_id, default_playlist)
+
+
+    def raise_error(self, message: str, broken: bool=False, cause_exception=None):
+        """Helper method to log error and raise PaavoAIError."""
+        if cause_exception:
+            message = f"{message} Error: {str(cause_exception)}"
+            _LOGGER.error(message)
+            raise PaavoAIError(message, ollama_broken=broken) from cause_exception
+        else:
+            _LOGGER.error(message)
+            raise PaavoAIError(message, ollama_broken=broken)
 
     @property
     def supported_languages(self):
@@ -86,60 +102,31 @@ class PaavoAIConversationAgent(AbstractConversationAgent):
     async def music_get_actions(self) -> str:
         """Get the music actions."""
 
-        # use cases:
-        # - play music (i.e. turn on the music activity (if not already), load the default playlist (if not already))
-        # - load playlist (i.e. load, replace and play)
-        # - stop music (i.e. stop the music, enable power-off activity
-        # - pause music (pause playback, if playing)
-        # - resume music (resume playback, if paused)
-        # - next song (skip to the next song in the playlist)
-        # - previous song (skip to the previous song in the playlist)
-
+        prompt = self._cfg['conversation']['music_get_action_prompt']
         conversation_history = await self.conversation_get_str(4)
-        # TODO: Get this from the config
-        prompt = "You act as an AI agent part of a larger Home AI.\n"
-        prompt += "Your task is to select the action and optional parameter for the music player based on the conversation at the end.\n"
-        prompt += "The actions are as follows (only the 'load' and 'message' actions takes a parameter):\n"
-        prompt += "- play: Play music. This powers on the needed devices and loads the default playlist.\n"
-        prompt += "- load [play list name]: Load playlist. This finds the named playlist, loads and plays it.\n"
-        prompt += "- stop: Stop music. This powers down the needed devices.\n"
-        prompt += "- pause: Pause music.\n"
-        prompt += "- resume: Continue playback.\n"
-        prompt += "- next: Skips to next song.\n"
-        prompt += "- prev: Jumps to previous song.\n"
-        prompt += "- message [message]: If the above actions don't match user request send a response back to the user in their language.\n"
-        prompt += "\n"
-        prompt += "Use only the listed actions, do not invent new ones.\n"
-        prompt += "Answer with two lines: First contains the reasoning for it (starts with 'reasoning:') and the second contains the action and the optional parameter (starts with 'actions:').\n"
-        prompt += "\n"
-        prompt += "Example answer in the exact correct format:\n"
-        prompt += "reasoning: The user requested to load play listed called 'the best'\n"
-        prompt += "action: load the best\n"
-        prompt += "\n"
-        prompt += f"\n\n{conversation_history}\n"
+        prompt = prompt.replace("{conversation_history}",conversation_history)
 
         try:
             response = await self.ollama_prompt(prompt)
-        except PaavoAIConversationAgentError as e:
-            raise e from e
+        except PaavoAIError as e:
+            self.raise_error("Error while getting music actions from Ollama",
+                             broken=True,
+                             cause_exception=e)
 
         response = response.strip().lower()
         if ("reasoning:" not in response) or ("action:" not in response):
-            error_message = "Ollama response was not in specified format. Response: %s" % response
-            _LOGGER.error(error_message)
-            # TODO : Use language specific error messages that can be spoken
-            raise PaavoAIConversationAgentError(error_message)
+            self.raise_error("Ollama response was not in specified format. " \
+                             f"Response: {response}")
 
         # Extract the topic from the response
         action = response.split("action:")[-1].strip()
         action = action.split("\n")[0].strip()
         # Check if the topic is valid
-        if action not in ["play", "stop", "pause", "resume", "next", "prev"]:
+        if action not in ["play", "stop", "pause", "resume", "next", "prev", "info"]:
+            # These takes extra parameters, so need to check separately
             if not action.startswith("load ") and not action.startswith("message "):
-                error_message = f"Invalid action '{action}' returned by Ollama. Response: {response}"
-                _LOGGER.error(error_message)
-                # TODO : Use language specific error messages that can be spoken
-                raise PaavoAIConversationAgentError(error_message)
+                self.raise_error(f"Invalid action '{action}' "
+                                 f"returned by Ollama. Response: {response}")
 
         # Extract the reasoning
         reasoning = response.split("reasoning:")[-1].strip()
@@ -151,45 +138,26 @@ class PaavoAIConversationAgent(AbstractConversationAgent):
 
     async def topic_get(self) -> str:
         """Get the topic of the conversation."""
+        prompt = self._cfg['conversation']['topic_get_prompt']
         conversation_history = await self.conversation_get_str(4)
-        # TODO: Get this from the config
-        prompt = "You act as an AI agent part of a larger Home AI.\n"
-        prompt += "Your task is to select the topic of the conversation at the end.\n"
-        prompt += "The topics are:\n"
-        prompt += "- lights: Control lights\n"
-        prompt += "- music: Control music\n"
-        prompt += "- sensor: Query sensor value (e.g. temperature in a given location)\n"
-        prompt += "\n"
-        prompt += "Use only the listed topics, do not invent new ones. Select the 'sensor' topic if the others don't match\n"
-        prompt += "Answer with two lines: First contains the reasoning for it (starts with 'reasoning:') and the second contains the topic (starts with 'topic:').\n"
-        prompt += "\n"
-        prompt += "Example answer in the exact correct format:\n"
-        prompt += "reasoning: The user asked about the temperature of the living room\n"
-        prompt += "topic: sensor\n"
-        prompt += "\n"
-        prompt += f"\n\n{conversation_history}\n"
+        prompt = prompt.replace("{conversation_history}", conversation_history)
 
         try:
             response = await self.ollama_prompt(prompt)
-        except PaavoAIConversationAgentError as e:
-            raise e from e
+        except PaavoAIError as e:
+            self.raise_error("Error while getting topic from Ollama",
+                             broken=True,
+                             cause_exception=e)
 
         response = response.strip().lower()
         if ("reasoning:" not in response) or ("topic:" not in response):
-            error_message = "Ollama response was not in specified format. Response: %s" % response
-            _LOGGER.error(error_message)
-            # TODO : Use language specific error messages that can be spoken
-            raise PaavoAIConversationAgentError(error_message)
+            self.raise_error(f"Ollama response was not in specified format. Response: {response}")
 
         # Extract the topic from the response
         topic = response.split("topic:")[-1].strip()
         topic = topic.split("\n")[0].strip()
-        # Check if the topic is valid
         if topic not in ["lights", "music", "sensor"]:
-            error_message = f"Invalid topic '{topic}' returned by Ollama. Response: {response}"
-            _LOGGER.error(error_message)
-            # TODO : Use language specific error messages that can be spoken
-            raise PaavoAIConversationAgentError(error_message)
+            self.raise_error(f"Invalid topic '{topic}' returned by Ollama. Response: {response}")
 
         # Extract the reasoning
         reasoning = response.split("reasoning:")[-1].strip()
@@ -204,17 +172,66 @@ class PaavoAIConversationAgent(AbstractConversationAgent):
         """Send a prompt to the Ollama server and return the response."""
         # Get the response from the Ollama server
         try:
-            response = await self.hass.async_add_executor_job(self.ollama.send_request,
+            response = await self._hass.async_add_executor_job(self._ollama.send_request,
                                                               prompt)
         except Exception as e:  # pylint: disable=broad-except
-            error_message = f"Error while sending request to Ollama: {e}"
-            _LOGGER.error(error_message)
-            # TODO: Use language specific error messages that can be spoken
-            raise PaavoAIConversationAgentError(error_message)
+            self.raise_error("Error while sending request to Ollama",
+                broken=True,
+                cause_exception=e
+            )
 
         return response
 
-    async def create_response(self, user_input: ConversationInput, response: str) -> ConversationResult:
+    async def generate_user_error(self,
+                                  user_input: ConversationInput,
+                                  message: str,
+                                  ollama_broken: bool = False) -> ConversationResult:
+        """Generate a user error response."""
+        _LOGGER.error(message)
+        if ollama_broken:
+            message = "AI server is broken, please try again later."
+            _LOGGER.error("Ollama broken, overriding the message: %s", message)
+            return await self.create_response(user_input, message)
+
+        prompt = self._cfg['conversation']['user_error_prompt']
+        conversation_history = await self.conversation_get_str(4)
+        prompt = prompt.replace("{conversation_history}", conversation_history)
+        prompt = prompt.replace("{message}", message)
+
+        try:
+            response = await self.ollama_prompt(prompt)
+            _LOGGER.error("User error response from Ollama: %s", response)
+        except PaavoAIError as e:
+            # We are already in an error state, so just return a generic error message
+            _LOGGER.error("Error while generating user error response: %s", e)
+            response = "AI server is broken, please try again later."
+
+        return await self.create_response(user_input, response)
+
+    async def generate_user_reply(self, message: str) -> str:
+
+        """Generate a user reply based on the action result string."""
+        _LOGGER.debug(message)
+
+        prompt = self._cfg['conversation']['user_reply_prompt']
+        conversation_history = await self.conversation_get_str(8)
+        prompt = prompt.replace("{conversation_history}", conversation_history)
+        prompt = prompt.replace("{message}", message)
+
+        try:
+            response = await self.ollama_prompt(prompt)
+            _LOGGER.debug("The rephased message from Ollama: %s", response)
+        except PaavoAIError as e:
+            # We are responding to the user, so too late to do any fallbacks
+            _LOGGER.error("Error while generating rephrased response: %s", e)
+            response = "The request might have been completed but AI server is now broken"
+
+        return response.strip()
+
+
+    async def create_response(self,
+                              user_input: ConversationInput,
+                              response: str) -> ConversationResult:
         """Return the response from the Ollama server."""
                # Create an IntentResponse object
         intent_response = IntentResponse(language=user_input.language)
@@ -229,7 +246,10 @@ class PaavoAIConversationAgent(AbstractConversationAgent):
         return result
 
     async def async_process(self, user_input: ConversationInput) -> ConversationResult:
-        _LOGGER.debug("PaavoAI processing: '%s' for conversation_id: %s", user_input.text, user_input.conversation_id)
+        """ The main method to process the user input and return a response."""
+
+        _LOGGER.debug("PaavoAI processing: '%s' for conversation_id: %s",
+                      user_input.text, user_input.conversation_id)
 
         # TODO: Need to have the conversation ID
         # Add user input to history
@@ -237,8 +257,10 @@ class PaavoAIConversationAgent(AbstractConversationAgent):
 
         try:
             topic = await self.topic_get()
-        except PaavoAIConversationAgentError as e:
-            return await self.create_response(user_input, str(e))
+        except PaavoAIError as e:
+            return await self.generate_user_error(user_input,
+                                                  "Error while getting topic for the user comment",
+                                                  e.ollama_broken)
 
         action = "NONE"
         if topic == "sensor":
@@ -254,29 +276,28 @@ class PaavoAIConversationAgent(AbstractConversationAgent):
                     # If the action is a message, just return it
                     response_message = action_string.split("message ")[-1].strip()
                     await self.conversation_store("assistant", response_message)
-                    return await self.create_response(user_input, action)
+                    return await self.create_response(user_input, response_message)
 
-                response_message = await self.music_player.parse_action(action_string)
-            except Exception as e:
-                error_string = f"Error while processing music action: {e}"
-                _LOGGER.error(error_string)
-                return await self.create_response(user_input, error_string)
+                result = await self.music_player.parse_action(action_string)
+            except Exception: # pylint: disable=broad-except
+                return await self.generate_user_error(user_input,
+                                                     "Error while processing music action")
 
-            # Store assistant's response (the outcome of the action)
+            response_message = await self.generate_user_reply(result)
             await self.conversation_store("assistant", response_message)
             return await self.create_response(user_input, response_message)
 
         # TMP: just turn the action for now
-        return await self.create_response(user_input, action)
+        return await self.create_response(user_input, f"{topic} {action}")
 
         # TODO: Add proper prompt
         # TODO: configure the history length
-        conversation_history = await self.conversation_get_str(4)
-        engineered_prompt = f"{conversation_history}\n"
+        #conversation_history = await self.conversation_get_str(4)
+        #engineered_prompt = f"{conversation_history}\n"
 
-        response = await self.ollama_prompt(engineered_prompt)
+        #response = await self.ollama_prompt(engineered_prompt)
 
         # Add assistant response to history
-        await self.conversation_store("assistant", response)
+        #await self.conversation_store("assistant", response)
 
-        return await self.return_response(response)
+        #return await self.return_response(response)

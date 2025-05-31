@@ -1,3 +1,5 @@
+""" Music Assistant control for Home Assistant """
+
 import logging
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
@@ -6,24 +8,38 @@ _LOGGER = logging.getLogger(__name__)
 
 class MusicPlayerError(Exception):
     """Custom exception for MusicPlayer errors."""
-    pass
 
 class MusicPlayer:
     """
     A class to control a Home Assistant media_player entity,
     specifically tailored for Music Assistant commands.
     """
-    def __init__(self, hass: HomeAssistant, entity_id: str, default_playlist_id: str = None):
+    def __init__(self, hass: HomeAssistant, entity_id: str, default_playlist_id: str = ""):
         """
         Initialize the MusicPlayer.
 
         :param hass: The Home Assistant instance.
         :param entity_id: The entity_id of the Music Assistant media_player.
-        :param default_playlist_id: The media_content_id for the default playlist (for 'play' action).
+        :param default_playlist_id: The media_content_id for the default playlist
+               (for 'play' action).
         """
         self.hass = hass
         self.entity_id = entity_id
         self.default_playlist_id = default_playlist_id
+
+    def raise_error(self, message: str, cause_exception=None):
+        """
+        Helper method to log error and raise MusicPlayerError.
+        :param message: The error message to log and raise.
+        :param cause_exception: Optional exception that caused the error.
+        """
+        if cause_exception:
+            message = f"{message} Error: {str(cause_exception)}"
+            _LOGGER.error(message)
+            raise MusicPlayerError(message) from cause_exception
+        else:
+            _LOGGER.error(message)
+            raise MusicPlayerError(message)
 
     async def parse_action(self, action: str) -> str:
         """
@@ -49,10 +65,45 @@ class MusicPlayer:
             return await self.next_track()
         elif action == "prev":
             return await self.previous_track()
+        elif action == "info":
+            media_info = await self.get_current_media_info()
+            if media_info["title"]:
+                return f"Now playing: {media_info['title']} by " \
+                       f"{media_info['artist']} on {self.entity_id}"
+            else:
+                return f"No media currently playing on {self.entity_id}"
         else:
-            raise MusicPlayerError(f"Unknown action: {action}")
+            self.raise_error(f"Unknown action: {action}")
 
-    async def _call_service(self, service_name: str, data: dict = None) -> None:
+    async def get_current_media_info(self) -> dict:
+        """
+        Get information about the currently playing media.
+        :return: Dictionary containing current media information.
+        """
+        _LOGGER.debug("Getting current media info for %s", self.entity_id)
+
+        try:
+            state = self.hass.states.get(self.entity_id)
+            if not state:
+                self.raise_error(f"Entity {self.entity_id} not found")
+
+            media_info = {
+                "state": state.state,
+                "title": state.attributes.get("media_title"),
+                "artist": state.attributes.get("media_artist"),
+                "album": state.attributes.get("media_album_name"),
+                "duration": state.attributes.get("media_duration"),
+                "position": state.attributes.get("media_position"),
+                "volume": state.attributes.get("volume_level"),
+                "is_muted": state.attributes.get("is_volume_muted", False)
+            }
+
+            return media_info
+
+        except Exception as e: # pylint: disable=broad-except
+            self.raise_error(f"Failed to get media info for {self.entity_id}", cause_exception=e)
+
+    async def _call_service(self, service_name: str, data: dict | None = None) -> None:
         """
         Helper method to call media_player services.
         Raises MusicPlayerError on failure.
@@ -77,17 +128,12 @@ class MusicPlayer:
                 service_name, self.entity_id
             )
         except HomeAssistantError as e:
-            _LOGGER.error(
-                "Error calling media_player.%s for %s: %s",
-                service_name, self.entity_id, e
-            )
-            raise MusicPlayerError(f"Failed to execute {service_name} on {self.entity_id}: {e}") from e
-        except Exception as e:
-            _LOGGER.error(
-                "Unexpected error calling media_player.%s for %s: %s",
-                service_name, self.entity_id, e
-            )
-            raise MusicPlayerError(f"Unexpected error during {service_name} on {self.entity_id}: {e}") from e
+            self.raise_error(f"Failed to call media_player.{service_name} for {self.entity_id}.",
+                             cause_exception=e)
+        except Exception as e: # pylint: disable=broad-except
+            self.raise_error(f"Unexpected error calling media_player.{service_name} "
+                             f"for {self.entity_id}.",
+                             cause_exception=e)
 
     async def play_default(self) -> str:
         """
@@ -105,10 +151,10 @@ class MusicPlayer:
         #    await self._call_service("media_play")
         #    return f"Playback started/resumed on {self.entity_id}."
 
-        #service_data = {
-        #    "media_content_id": self.default_playlist_id,
-        #    "media_content_type": "playlist", # Assuming default is a playlist
-        #}
+        service_data = {
+            "media_content_id": self.default_playlist_id,
+            "media_content_type": "playlist", # Assuming default is a playlist
+        }
         await self._call_service("play_media", service_data)
         return f"Playing default playlist on {self.entity_id}."
 

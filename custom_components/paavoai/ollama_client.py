@@ -16,6 +16,17 @@ class OllamaClient:
         self.base_url = f"http://{host}:{port}"
         self.model = model
 
+    def raise_error(self, message: str, cause_exception=None):
+        """Helper method to log error and raise OllamaClientError."""
+
+        if cause_exception:
+            message = f"{message} Error: {str(cause_exception)}"
+            _LOGGER.error(message)
+            raise OllamaClientError(message) from cause_exception
+        else:
+            _LOGGER.error(message)
+            raise OllamaClientError(message)
+
     def send_request(self, prompt: str) -> str:
         """Send a request to the Ollama API and return the response."""
 
@@ -27,7 +38,10 @@ class OllamaClient:
 
         _LOGGER.debug("Sending request to Ollama: URL=%s, Payload=%s", api_url, json.dumps(payload))
 
-        response = requests.post(api_url, json=payload, timeout=30)
+        try:
+            response = requests.post(api_url, json=payload, timeout=30)
+        except Exception as e: # pylint: disable=broad-except
+            self.raise_error(f"Failed to connect to Ollama at {self.base_url}.", e)
 
         _LOGGER.debug("Ollama response status: %s, response: %s",
                       response.status_code,
@@ -42,14 +56,12 @@ class OllamaClient:
                                        flags=re.DOTALL).strip()
 
                 return response_text
-            except requests.exceptions.JSONDecodeError as exc:
-                # Handle cases where response is 200 but not valid JSON
-                # TODO: Use language specific error messages that can be spoken
-                error_message = f"Ollama response was not valid JSON. Response: {response.text}"
-                _LOGGER.error(error_message)
-                raise OllamaClientError(error_message)from exc
+            except Exception as exc: # pylint: disable=broad-except
+                self.raise_error("An error occurred while processing the json response.\n"
+                                 f"Response: {response.text}.\n", exc)
         else:
-            # TODO: Use language specific error messages that can be spoken
-            error_message = f"Ollama Error: {response.status_code} - {response.text}"
-            _LOGGER.error(error_message)
-            raise OllamaClientError(error_message)
+            self.raise_error(
+                f"Failed to get a valid response from Ollama.\n"
+                f"Status code: {response.status_code}.\n"
+                f"Response: {response.text}"
+            )
